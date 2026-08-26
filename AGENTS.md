@@ -55,6 +55,7 @@ Model comparisons should use the same evaluation data, prompt suite, and clearly
 
 ## Coding-agent behaviour
 
+- Keep answers concise and direct; avoid fluff unless the user asks for depth.
 - Inspect the existing files and implementation plan before editing.
 - Make focused changes that match the current milestone; do not scaffold unrelated phases without a clear request.
 - Explain assumptions when requirements are ambiguous, especially around datasets, model architecture, and experiment configuration.

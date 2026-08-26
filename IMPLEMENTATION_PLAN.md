@@ -62,6 +62,13 @@ The core implementation is deliberately manual. Use ChatGPT or another assistant
 
 Do not move to a larger model because the smaller model is inconvenient. Move when the current model is correct, tested, documented, and understood well enough that you can predict what scaling will change.
 
+## Current status
+
+- Current phase: transitioning from Phase 0 to Phase 1.
+- Phase 0 environment smoke test: complete.
+- Phase 0 documentation: complete.
+- Next focus: Phase 1 character tokenizer and data batching fundamentals.
+
 ## 3. Suggested pace
 
 The nominal schedule is 10–12 weeks, but it is intentionally open-ended. A reasonable rhythm is:
