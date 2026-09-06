@@ -17,7 +17,7 @@ class BPETokenizer:
         return self._encoder
 
     def encode(self, text: str) -> List[int]:
-        return self._encoder.encode(text)
+        return self._encoder.encode(text, allowed_special={"<|endoftext|>"})
 
     def decode(self, ids: List[int]) -> str:
         return self._encoder.decode(ids)
