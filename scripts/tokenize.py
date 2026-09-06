@@ -10,7 +10,7 @@ from sparklm.tokenizers.basic_tokenizer import BasicTokenizer
 def main(argv=None):
     # pattern = r"(\s)" #simplest pattern to split on whitespace
     #pattern = r"([,.]|\s)" # include whitespace and punctuation as tokens
-    pattern = r"([,.:;?_!\"()\']|--|\s)" # include whitespace and punctuation as tokens, but collapse consecutive whitespace into a single token
+    pattern = r'([,.:;?_!"()\']|--|\s)' # include whitespace and punctuation as tokens, but collapse consecutive whitespace into a single token
   
     with open(str(Path(__file__).parent / "the-verdict.txt"), "r", encoding="utf-8") as f:
         text = f.read()
@@ -29,10 +29,10 @@ def main(argv=None):
     tokenCount = len(tokens)    
 
     try:
-        # sys.stdout.write(out)
-        sys.stdout.write(f"\n\nTotal Tokens: {tokenCount}\n")
-        sys.stdout.write(f"Token IDs: {token_ids}\n")
-        sys.stdout.write(f"Decoded Text: {decoded_text}\n")
+        print(out)
+        print(f"\n\nTotal Tokens: {tokenCount}\n")
+        print(f"Token IDs: {token_ids}\n")
+        print(f"Decoded Text: {decoded_text}\n")       
     except Exception as exc:
         print(f"Error writing output: {exc}", file=sys.stderr)
         return 4
