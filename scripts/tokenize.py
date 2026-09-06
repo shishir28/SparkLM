@@ -5,6 +5,12 @@ import argparse
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path = [str(ROOT / "src")] + [
+    p for p in sys.path if Path(p).resolve() != SCRIPT_DIR and p not in ("", str(ROOT / "src"))
+]
+
 from sparklm.tokenizers.basic_tokenizer import BasicTokenizer
 
 def main(argv=None):
