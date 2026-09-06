@@ -1,504 +1,779 @@
 # SparkLM Implementation Plan
 
-## Building a Small Language Model from First Principles on NVIDIA DGX Spark
+## Learn to Build a Decoder-Only Language Model from Scratch
 
-SparkLM is a slow, fundamentals-first learning project: build a decoder-only Transformer yourself, understand every major component, and only then scale, adapt, compress, and serve it. The project is intentionally designed for learning rather than speed. A milestone may take several weeks; the quality of understanding matters more than the calendar.
+This is a learning plan, not a race to produce the largest possible model. It follows
+Sebastian Raschka's *Build a Large Language Model (From Scratch)* in order, while
+adding the tests, experiment records, data controls, and DGX Spark measurements
+needed to make the work reproducible.
 
-The end-to-end path is:
+The starting assumption is deliberately strict: **nothing is complete yet**. Existing
+repository files may be studied or replaced, but a milestone counts only after its
+concepts have been implemented, tested, explained, and recorded during this learning
+journey.
+
+The core path is:
 
 ```text
-Raw text
-  → character tokenizer
-  → tiny next-token model
-  → manual causal self-attention
-  → decoder-only Transformer
-  → SparkLM-Tiny
-  → SparkLM-125M pretraining
-  → evaluation and error analysis
-  → property-management domain adaptation
-  → instruction tuning
-  → LoRA experiments
-  → distillation
-  → quantisation
-  → local inference on DGX Spark
+environment and PyTorch foundations
+  -> language-model concepts
+  -> character-tokenizer baseline
+  -> BPE and sliding-window data pipeline
+  -> simple self-attention
+  -> causal multi-head attention
+  -> GPT-style decoder-only model
+  -> pretraining, evaluation, and generation
+  -> classification fine-tuning
+  -> instruction fine-tuning
+  -> LoRA
+  -> optional SparkLM extensions
 ```
 
-## 1. Project objectives
+## 1. Outcomes
+
+By the end of the core path, you should be able to:
+
+1. Explain how next-token prediction turns unlabeled text into a training task.
+2. Trace text through tokenization, token IDs, embeddings, Transformer blocks,
+   logits, loss, sampling, and decoded output.
+3. Implement a GPT-style decoder-only model in PyTorch without using
+   `torch.nn.Transformer` or a pretrained causal-language-model wrapper for the core
+   implementation.
+4. Derive and implement scaled dot-product attention, causal masking, and multi-head
+   attention with inspectable tensor shapes.
+5. Pretrain a small model that you own, evaluate it on held-out data, save and resume
+   it, and explain its failure modes.
+6. Load a compatible reference checkpoint as a separate interoperability exercise.
+7. Fine-tune a pretrained model for classification and instruction following.
+8. Implement a minimal LoRA path and compare it fairly with full fine-tuning.
+9. Reproduce every meaningful result from a recorded configuration, dataset version,
+   code version, seed, and device description.
+
+The goal is durable understanding. A large checkpoint without correctness evidence
+does not satisfy this plan.
 
-By the end of the project, you should be able to:
+## 2. How to Use the Book
 
-1. Explain next-token prediction, tokenisation, embeddings, positional information, causal masking, attention, residual connections, normalisation, logits, loss, optimisation, and generation in your own words.
-2. Implement a small decoder-only Transformer in PyTorch without using `nn.Transformer` or a pretrained causal language-model implementation for the core learning path.
-3. Train and debug progressively larger models, from a tiny character model to an approximately 125M-parameter model.
-4. Build a reproducible data pipeline, checkpointing system, evaluation harness, and experiment log.
-5. Adapt the base model to property-management material without confusing domain knowledge with instruction-following ability.
-6. Compare full fine-tuning with LoRA and understand when each is appropriate.
-7. Distil and quantise a model, measure the quality and performance trade-offs, and run it locally.
-8. Read training curves and generated samples critically instead of treating a lower loss as the whole definition of success.
+Read the book sequentially because each chapter depends on the preceding chapters.
+For each section, use this loop:
+
+1. **Predict:** write down expected inputs, outputs, and tensor shapes before coding.
+2. **Implement:** write the smallest clear version yourself.
+3. **Inspect:** print or debug intermediate tensors on a tiny deterministic example.
+4. **Test:** check shapes, numerical results, gradients, and behavioral invariants.
+5. **Compare:** only then compare with the book code or a trusted PyTorch reference.
+6. **Explain:** record what the component does, why it is needed, and one way it can
+   fail in `LEARNING_LOG.md`.
+
+Do not copy the book's implementation as the first step. The book is the guide and
+reference; the SparkLM code should be your own inspectable implementation. Do not
+copy prose, figures, or substantial book content into this repository.
 
-## 2. Working principles
+### Book-to-project map
+
+| Book material | SparkLM phase | Result |
+| --- | --- | --- |
+| Appendix A, as needed | Phase 0 | PyTorch and device readiness |
+| Chapter 1 | Phase 1 | Written mental model and scope |
+| Chapter 2 | Phases 2-3 | Character baseline, BPE, batches, embeddings |
+| Chapter 3, sections 3.1-3.4 | Phase 4 | Simple and trainable self-attention |
+| Chapter 3, sections 3.5-3.6 | Phase 5 | Causal and multi-head attention |
+| Chapter 4 | Phase 6 | Complete GPT-style model and generation |
+| Chapter 5 | Phases 7-8 | Pretraining, evaluation, sampling, checkpoints |
+| Appendix D | Phase 7, after baseline | Warmup, cosine decay, clipping |
+| Chapter 6 | Phase 9 | Classification fine-tuning |
+| Chapter 7 | Phase 10 | Instruction fine-tuning and evaluation |
+| Appendix E | Phase 11 | LoRA implementation and comparison |
 
-### Fundamentals before optimisation
+Classification is included because it teaches how a pretrained backbone can be
+adapted by changing its objective and output head. It is not a prerequisite for
+instruction tuning, but it should be completed once as part of the book path.
 
-The first implementation should favour visibility over speed. Write the matrix operations explicitly, inspect tensor shapes, and keep intermediate values observable. Once the implementation is correct, compare it with optimised PyTorch operations.
+## 3. Non-Negotiable Rules
 
-### One source of truth for understanding
+### Implement the learning path explicitly
 
-Do not hide the core model behind a framework abstraction during the learning stages. You may use PyTorch for tensors, automatic differentiation, optimisers, checkpointing, and device management, but the attention and Transformer logic should remain yours until the relevant milestone is complete.
+Write the character tokenizer, input/target construction, attention calculations,
+multi-head reshape and recombination, Transformer block, model forward pass,
+generation loop, training loop, checkpoint metadata, and evaluation logic yourself.
+PyTorch may provide tensors, autograd, optimizers, `Linear`, `Embedding`,
+`LayerNorm`, data loading, and device management.
 
-### Tests before scale
+### Establish correctness before optimization
 
-A tiny model with strong tests is more valuable than a large model with uncertain correctness. Every major component should have a small deterministic test and at least one numerical or behavioural invariant.
+Start with tiny CPU-friendly tensors and no dropout. Add batching, dropout, mixed
+precision, fused attention, compilation, or other performance features only after the
+simple path has direct tests. Keep the simple implementation available as a reference.
 
-### Experiments are part of the implementation
+### Separate the two model tracks
 
-Record the question, hypothesis, configuration, result, and conclusion for each meaningful run. Keep failed experiments: they are evidence about the system and useful learning material.
+- **Ownership track:** initialize SparkLM weights randomly and pretrain the model on a
+  lawful corpus. This is the proof that you built and trained your own language model.
+- **Reference track:** map an openly available GPT-2-compatible checkpoint into your
+  architecture. Use it to test compatibility and to run meaningful fine-tuning without
+  pretending those weights were pretrained by this project.
 
-### Use coding agents sparingly
+Never mix results from these tracks without labeling them.
 
-The core implementation is deliberately manual. Use ChatGPT or another assistant as a tutor, reviewer, explainer, or debugging partner—not as the author of the attention, Transformer block, training loop, tokenizer integration, generation loop, or evaluation logic. If you ask for help, first describe what you believe is happening and show your own attempt.
+### Treat data as part of the implementation
 
-### Scale only after understanding
+Before any dataset is used, record its name, source, license or usage permission,
+acquisition date, content hash or version, privacy decision, split method, and every
+preprocessing transformation in `essentials/DATA_POLICY.md` or a dataset manifest.
+Do not use the book PDF itself as training data.
 
-Do not move to a larger model because the smaller model is inconvenient. Move when the current model is correct, tested, documented, and understood well enough that you can predict what scaling will change.
+### Treat experiments as claims
 
-## Current status
+Every meaningful run must state its question and hypothesis before execution, then
+record the code version, config, data version, split, tokenizer, seed, device, metrics,
+result, limitations, and next decision. Keep useful failed runs.
 
-- Current phase: transitioning from Phase 0 to Phase 1.
-- Phase 0 environment smoke test: complete.
-- Phase 0 documentation: complete.
-- Next focus: Phase 1 character tokenizer and data batching fundamentals.
+### Scale only through exit gates
 
-## 3. Suggested pace
+Do not move to the next phase merely because the code runs. Complete the phase's exit
+gate, learning note, and tests first. Do not start the optional 124M-scale work until a
+smaller model is correct and reproducible.
 
-The nominal schedule is 10–12 weeks, but it is intentionally open-ended. A reasonable rhythm is:
+## 4. Core Learning Path
 
-- 3–5 focused sessions per week
-- 60–120 minutes per session
-- one written learning note per milestone
-- one reproducible experiment before moving on
+### Phase 0 - Foundations from Zero
 
-If a phase takes two or three weeks, that is normal. The project is complete when the acceptance criteria are met, not when the calendar says it should be.
+**Book:** Appendix A as needed; skim the book's setup and code conventions.
 
-## 4. Phased milestones
+**Learn**
 
-### Phase 0 — Environment, scope, and experiment discipline
+- Python classes, imports, virtual environments, and command-line execution.
+- Tensor creation, shapes, dtypes, indexing, broadcasting, matrix multiplication,
+  gradients, modules, optimizers, datasets, data loaders, and train/eval modes.
+- The difference between CPU execution and CUDA execution.
+- Reproducibility limits: fixed seeds improve repeatability but do not make all GPU
+  operations bitwise deterministic.
 
-**Suggested time:** 2–4 sessions
+**Build**
 
-**Objectives**
+- A documented Python environment with explicit dependencies.
+- A one-command smoke test reporting Python, PyTorch, CUDA, GPU, memory, storage,
+  and successful tensor placement.
+- A single seed helper covering Python and PyTorch CPU/CUDA RNGs.
+- Initial data, artifact, experiment, and privacy conventions.
+- A fast test command that works from the repository root.
 
-- Confirm the DGX Spark environment, CUDA/PyTorch installation, GPU visibility, available storage, and basic memory limits.
-- Create the repository and establish reproducible configuration and logging conventions.
-- Define the first corpus and a policy for licensing, privacy, and data provenance.
+**Verify**
 
-**Deliverables**
+- Recreating the environment from the documented steps succeeds.
+- Repeated seeded CPU examples match exactly.
+- Repeated seeded GPU examples are checked and any nondeterminism is documented.
+- Tests, checkpoints, datasets, and generated artifacts have deliberate locations;
+  large or sensitive artifacts are ignored by Git.
 
-- Working Python environment and a documented setup procedure.
-- A minimal device diagnostic script.
-- Seed handling and a configuration file format.
-- A short `LEARNING_LOG.md` describing the project rules and first observations.
+**Learning artifact**
 
-**Acceptance criteria**
+Record the environment, the first smoke-test result, what a gradient represents, and
+the shapes produced by one small matrix multiplication.
 
-- A one-command smoke test reports Python, PyTorch, CUDA, device name, and tensor-device status.
-- The same seed produces the same tiny test result on repeated runs.
-- Every dataset used later has a source, licence/usage note, date, and preprocessing description.
+**Exit gate**
 
-### Phase 1 — Character tokenizer and data fundamentals
+The smoke test and unit-test command pass from a clean shell, the environment is
+documented, and the data policy contains a complete template for future datasets.
 
-**Suggested time:** 1 week
+### Phase 1 - Understand the LLM Development Stages
 
-**Objectives**
+**Book:** Chapter 1, "Understanding large language models."
 
-- Learn the complete text-to-tensor path using the simplest useful tokenizer.
-- Build vocabulary creation, encoding, decoding, dataset splitting, and fixed-length batching.
+**Learn**
 
-**Implementation tasks**
+- What an LLM is and what next-token prediction actually optimizes.
+- The distinction between architecture construction, pretraining, and fine-tuning.
+- Why attention and decoder-only Transformers are suited to autoregressive text.
+- Why a small educational pretraining run is different from frontier-model training.
 
-- Normalise text conservatively and document every transformation.
-- Create a sorted character vocabulary with explicit unknown handling if needed.
-- Implement `encode(text)` and `decode(ids)`.
-- Create non-overlapping train/validation/test splits before sampling sequences.
-- Implement random batches of input sequences and one-position-shifted targets.
+**Build**
 
-**Experiments**
+- No model code yet.
+- Write a one-page explanation, in your own words, of the flow from raw text to a
+  generated token.
+- Define the ownership-track target: a small model that can be pretrained locally.
+- Define success metrics for the first corpus: held-out loss, perplexity, parameter
+  count, memory, throughput, and qualitative samples.
 
-- Verify `decode(encode(text)) == text` for representative inputs.
-- Print a batch and manually confirm that targets are the next character.
-- Compare several context lengths and inspect how much context the task requires.
+**Verify**
 
-**Acceptance criteria**
+- Explain the roles of data, parameters, loss, gradients, and sampling without looking
+  at the book.
+- Explain why pretraining and instruction fine-tuning are different objectives.
 
-- Round-trip tokenisation works for the supported character set.
-- Batch shapes and target alignment are tested.
-- A trivial frequency baseline is implemented and measured.
+**Exit gate**
 
-### Phase 2 — Tiny next-token model
+The learning note is complete and the first corpus is proposed, but no data is acquired
+until its provenance and license are recorded.
 
-**Suggested time:** 1 week
+### Phase 2 - Character Tokenizer and Next-Token Data Baseline
 
-**Objectives**
+**Book:** Chapter 2, sections 2.1-2.4 and 2.6. This character path is a SparkLM
+prerequisite added to make every transformation visible before BPE.
 
-- Understand logits, cross-entropy, teacher forcing, optimisation, and sampling before introducing attention.
+**Learn**
 
-**Implementation tasks**
+- Tokens, vocabularies, token IDs, unknown tokens, document boundaries, and special
+  tokens.
+- How a context window creates an input sequence and a target shifted by one token.
+- How stride changes overlap and the number of training examples.
 
-- Implement a token embedding lookup.
-- Add a simple linear or small multilayer next-token predictor.
-- Write the training loop, validation loop, gradient reset, optimiser step, and checkpoint save/load.
-- Implement generation with temperature and a maximum length.
+**Build**
 
-**Experiments**
+- A sorted, deterministic character vocabulary.
+- `encode(text) -> list[int]` and `decode(ids) -> str`.
+- Explicit handling for unsupported characters and end-of-text boundaries.
+- Train/validation/test splitting before sliding-window sampling.
+- A dataset and batcher that return `(batch, sequence)` input and target tensors.
+- A unigram or bigram baseline for context.
 
-- Overfit a very small batch; the loss should become extremely low.
-- Compare random, greedy, and temperature-controlled generation.
-- Plot training and validation loss.
+**Verify**
 
-**Acceptance criteria**
+- Representative supported text satisfies `decode(encode(text)) == text`.
+- Vocabulary IDs are stable across runs.
+- Every target token is the next input token, including batch boundaries.
+- Splits do not overlap and windows do not cross split or document boundaries unless
+  that behavior is explicitly intended and tested.
+- Invalid IDs and unsupported characters have tested behavior.
 
-- The model can overfit a tiny batch deliberately.
-- Checkpoint reload produces the same evaluation result.
-- Generated text demonstrates that the model has learned the local training distribution, even if it is not coherent.
+**Learning artifact**
 
-### Phase 3 — Manual causal self-attention
+Draw one sequence of characters, IDs, input windows, and shifted targets. Explain
+context length and stride.
 
-**Suggested time:** 1–2 weeks
+**Exit gate**
 
-**Objectives**
+Tokenizer round trips, split integrity, batch shapes, and one-position target alignment
+have deterministic tests. The baseline metric is recorded.
 
-- Derive and implement scaled dot-product attention from first principles.
+### Phase 3 - BPE, Embeddings, and Positional Information
 
-**Implementation tasks**
+**Book:** Finish Chapter 2, especially sections 2.5-2.8.
 
-- Create query, key, and value projections.
-- Compute `QKᵀ / sqrt(d)`.
-- Apply a lower-triangular causal mask before softmax.
-- Multiply attention weights by values.
-- Add dropout only after the unregularised version works.
-- Inspect attention weights and tensor shapes at every stage.
+**Learn**
 
-**Experiments**
+- Why subword tokenization balances word and character vocabularies.
+- How byte pair encoding handles unfamiliar words.
+- The roles of token embeddings and positional embeddings.
+- Why embedding lookup and a one-hot vector multiplied by a weight matrix are
+  equivalent operations.
 
-- Confirm that a position cannot attend to future positions.
-- Test a hand-built example where the expected attention pattern is obvious.
-- Compare your implementation with `torch.nn.functional.scaled_dot_product_attention` on identical inputs.
-- Check forward-output and gradient differences within an appropriate numerical tolerance.
+**Build**
 
-**Acceptance criteria**
+- A tiny educational BPE merge exercise on a toy vocabulary.
+- Integration with a mature GPT-2-compatible BPE tokenizer for the book path.
+- Special-token policy with explicit allowed and disallowed cases.
+- Sliding-window loaders for BPE token IDs.
+- Token and absolute positional embedding layers whose output shapes are explicit.
+- Keep the Phase 2 character tokenizer working as a permanent baseline.
 
-- The causal mask is tested directly, not inferred only from generated text.
-- Manual attention agrees numerically with the reference implementation.
-- You can explain why scaling by `sqrt(d)` stabilises softmax inputs.
+**Verify**
 
-### Phase 4 — Decoder-only Transformer block
+- BPE encode/decode round trips work for normal text and representative edge cases.
+- Special tokens cannot be inserted accidentally.
+- Character and BPE loaders obey the same target-alignment contract.
+- Embedding output has shape `(batch, sequence, embedding_dimension)`.
+- Position IDs reset and truncate exactly as documented.
 
-**Suggested time:** 1 week
+**Experiment**
 
-**Objectives**
+On the same lawful sample, compare vocabulary size, tokens per character, tokens per
+word, sequence lengths, and round-trip behavior for character and BPE tokenization.
 
-- Assemble attention into a modern decoder block and understand information flow.
+**Exit gate**
 
-**Implementation tasks**
+The BPE choice is justified by measurements, both tokenizer paths pass tests, and
+embedding shapes are documented and tested.
 
-- Add multi-head attention by splitting and recombining head dimensions.
-- Add a feed-forward network, typically an expansion followed by a non-linearity and projection.
-- Add residual connections and layer normalisation.
-- Compare pre-normalisation and post-normalisation conceptually; use one consistently and document the choice.
-- Add positional embeddings or a clearly documented alternative.
+### Phase 4 - Self-Attention from First Principles
 
-**Acceptance criteria**
+**Book:** Chapter 3, sections 3.1-3.4.
 
-- Each subcomponent has shape tests.
-- The block preserves batch and sequence dimensions.
-- A short note explains the role of every residual path and normalisation layer.
-- The block can replace the Phase 2 predictor without breaking the training loop.
+**Learn**
 
-### Phase 5 — SparkLM-Tiny
+- Why fixed-context representations lose information over long sequences.
+- How dot products produce attention scores and softmax produces normalized weights.
+- How queries, keys, and values create trainable context vectors.
+- Why scores are scaled by the square root of the key dimension.
 
-**Suggested time:** 1 week
+**Build**
 
-**Objectives**
+- A loop-based attention calculation for one query.
+- A matrix-based unbatched self-attention calculation for all tokens.
+- A trainable self-attention module with separate Q, K, and V projections.
+- A batched version with named shape assertions at important boundaries.
+- Do not add causal masking, multiple heads, or dropout yet.
 
-- Build the first complete language model with enough capacity to show meaningful behaviour while remaining easy to debug.
+**Verify**
 
-**Suggested starting configuration**
+- Attention rows sum to one within a stated tolerance.
+- Loop and matrix implementations agree on a hand-calculated example.
+- Batched and unbatched results agree for the same example.
+- Forward values and gradients agree with a trusted reference or an independently
+  expressed calculation within documented tolerances.
 
-```text
-vocabulary: character-level initially
-context length: 128–256
-embedding width: 128–256
-layers: 4–6
-heads: 4–8
+**Learning artifact**
+
+Annotate the shapes in `Q @ K.transpose(-2, -1)`, softmax, and `weights @ V`.
+Explain the meanings of query, key, and value in your own words.
+
+**Exit gate**
+
+The unmasked implementation has shape, value, normalization, and gradient tests, and
+every matrix dimension can be explained without consulting the code.
+
+### Phase 5 - Causal and Multi-Head Attention
+
+**Book:** Chapter 3, sections 3.5-3.6.
+
+**Learn**
+
+- Why autoregressive training must prevent access to future tokens.
+- Why masking is applied to scores before softmax.
+- What separate attention heads can represent and how head dimensions are combined.
+- The difference between attention dropout and residual dropout.
+
+**Build**
+
+- A causal mask registered as a non-parameter buffer.
+- Causal self-attention without dropout first, then with configurable dropout.
+- A pedagogical multi-head wrapper using independent heads.
+- An efficient multi-head implementation using combined projections, reshape,
+  transpose, attention, recombination, and output projection.
+- Keep the pedagogical implementation as a numerical reference.
+
+**Verify**
+
+- Future attention probabilities are zero.
+- Changing a future token cannot change an earlier output in evaluation mode.
+- All masked attention rows still sum to one.
+- Pedagogical and efficient multi-head implementations agree when their weights are
+  copied into the same layout.
+- Invalid head counts and dimensions fail clearly.
+- Forward outputs and gradients agree with PyTorch scaled-dot-product attention within
+  a documented tolerance after the manual implementation passes direct tests.
+
+**Exit gate**
+
+Causality is proven by a direct influence test, not inferred from generated text, and
+the multi-head split/recombine path has deterministic numerical and gradient tests.
+
+### Phase 6 - Assemble a GPT-Style Decoder-Only Model
+
+**Book:** Chapter 4.
+
+**Learn**
+
+- Layer normalization, GELU, feed-forward expansion, residual connections, and
+  pre-normalization.
+- How repeated Transformer blocks preserve sequence shape.
+- How the language-model head maps hidden states to vocabulary logits.
+- Why an untrained model generates valid-shaped but meaningless output.
+
+**Build**
+
+- Layer normalization as a small educational implementation, then compare it with
+  `torch.nn.LayerNorm`.
+- The GELU approximation used by the GPT-style path.
+- A feed-forward network and residual connection experiments.
+- A pre-normalized Transformer block.
+- A complete configurable `GPTModel`: token embeddings, positional embeddings,
+  embedding dropout, repeated blocks, final normalization, and output head.
+- Parameter counting and estimated parameter-storage size.
+- A greedy autoregressive generation loop that crops context correctly.
+
+**Verify**
+
+- Each module has deterministic shape and finite-value tests.
+- Layer normalization gives the expected mean and variance within tolerance.
+- Residual connections improve gradient flow in a controlled deep-network example.
+- The full model maps `(B, T)` token IDs to `(B, T, vocabulary_size)` logits.
+- Generation respects prompt preservation, context length, batch dimension, and
+  maximum-new-token limits.
+- An untrained model completes forward, backward, and generation passes on CPU and
+  CUDA where available.
+
+**Experiment**
+
+Instantiate at least two small configurations and compare parameter count, forward
+memory, and latency. A GPT-2 124M-style configuration may be instantiated for shape
+and memory planning, but it is not yet a required training target.
+
+**Exit gate**
+
+The model passes component and integration tests, and a learning note traces one token
+sequence through every shape from IDs to logits.
+
+### Phase 7 - Pretrain SparkLM-Tiny
+
+**Book:** Chapter 5, sections 5.1-5.4. Use Appendix D only after the baseline loop is
+working and tested.
+
+**Learn**
+
+- Cross-entropy over flattened token positions, held-out loss, and perplexity.
+- Training versus evaluation mode and the effect of dropout.
+- Optimizer steps, epoch/token accounting, validation intervals, and overfitting.
+- Checkpoint contents and the difference between resuming training and loading only
+  model weights.
+
+**Build**
+
+- Loss calculation for a batch and a bounded data loader.
+- A transparent AdamW training loop with periodic validation.
+- Deliberate tiny-batch overfitting.
+- Atomic checkpoints containing model state, optimizer state, step/epoch, config,
+  tokenizer identity, seed/RNG state, and dataset/code metadata.
+- Exact resume support.
+- Loss-curve and generated-sample recording.
+- After the baseline is correct: learning-rate warmup, cosine decay, and gradient
+  clipping as isolated additions.
+
+**Verify**
+
+- Cross-entropy agrees with a hand-checked tiny example.
+- A tiny batch can be overfit to very low loss.
+- Evaluation does not compute gradients and uses evaluation mode.
+- Checkpoint reload preserves logits and held-out loss.
+- An interrupted run resumed from a checkpoint follows the documented reproducibility
+  expectations.
+- Train, validation, and test data remain disjoint.
+
+**Required experiment**
+
+Pretrain a genuinely small ownership-track model first. Record:
+
+- question and hypothesis;
+- model and tokenizer configuration;
+- parameter count and tokens processed;
+- training and validation loss, plus perplexity where meaningful;
+- learning rate, throughput, peak memory, and elapsed time;
+- fixed-prompt samples from several checkpoints;
+- observed failure modes and conclusion.
+
+**Exit gate**
+
+SparkLM-Tiny beats the Phase 2 baseline on held-out data, produces progressively more
+structured samples, resumes from a checkpoint, and has a reproducible run manifest.
+
+### Phase 8 - Generation and Reference-Weight Compatibility
+
+**Book:** Chapter 5, especially sections 5.3 and 5.5.
+
+**Learn**
+
+- Greedy decoding, probabilistic sampling, temperature, and top-k filtering.
+- Why generation quality cannot be inferred from training loss alone.
+- How external checkpoint tensor names and layouts map into your implementation.
+
+**Build**
+
+- Seeded multinomial sampling with temperature.
+- Top-k filtering, with greedy decoding as a clearly separate mode.
+- Input validation for invalid temperature, context, and generation limits.
+- A fixed qualitative prompt suite and structured sample output.
+- A documented adapter that loads one GPT-2-compatible reference checkpoint into the
+  SparkLM architecture, with no silent reshaping.
+
+**Verify**
+
+- Greedy generation is deterministic.
+- Seeded sampling is repeatable under the documented environment.
+- Temperature and top-k behavior is tested on controlled logits.
+- Every checkpoint assignment validates tensor shape and dtype.
+- Reference weights produce stable expected logits or generated text for a fixed input.
+- Ownership-track and reference-track results are clearly labeled.
+
+**Exit gate**
+
+Generation modes pass controlled tests, the prompt suite is versioned, and reference
+weights load through an explicit verified mapping. Downloading reference weights is
+optional and must have source and license metadata.
+
+### Phase 9 - Classification Fine-Tuning
+
+**Book:** Chapter 6.
+
+**Learn**
+
+- The difference between classification and generative objectives.
+- Dataset balance, stratified splitting, padding/truncation, frozen layers, and which
+  representation feeds a classifier.
+- Loss versus accuracy and why held-out evaluation matters.
+
+**Build**
+
+- A provenance-reviewed labeled text dataset pipeline.
+- Deterministic train/validation/test splits and data loaders.
+- Replacement of the language-model head with a classification head.
+- A staged fine-tuning policy: head only, selected final layers, then full fine-tuning
+  only if justified.
+- Classification loss, accuracy, confusion matrix, and prediction helper.
+
+**Verify**
+
+- Split class distributions and non-overlap are checked.
+- Padding and truncation behavior is tested.
+- Frozen parameters receive no gradients or updates.
+- Accuracy calculation matches a hand-checked example.
+- Saving and loading preserves predictions.
+
+**Experiment**
+
+Compare at least two freezing strategies using the same split and seeds. Report
+trainable parameters, validation/test accuracy, time, memory, and common errors.
+
+**Exit gate**
+
+The classifier beats a majority-class baseline on held-out data, the comparison is
+recorded, and errors are inspected rather than represented by accuracy alone.
+
+### Phase 10 - Instruction Fine-Tuning
+
+**Book:** Chapter 7.
+
+**Learn**
+
+- Instruction, optional input/context, and response formatting.
+- Padding, end-of-text handling, and loss masking for variable-length examples.
+- Why supervised instruction fine-tuning changes behavior rather than adding reliable
+  factual knowledge.
+- The limits and risks of model-based evaluation.
+
+**Build**
+
+- A small, lawful, versioned instruction dataset with train/validation/test boundaries.
+- A deterministic prompt formatter.
+- A custom collate function that pads sequences, shifts targets, and masks padding
+  positions with an ignored loss index.
+- Optional response-only loss masking as a documented experiment.
+- Fine-tuning from a labeled pretrained checkpoint.
+- Response extraction and storage in a reviewable structured format.
+- A fixed rubric covering instruction adherence, correctness, relevance, formatting,
+  unsupported claims, and refusal behavior where applicable.
+
+**Verify**
+
+- Formatting is tested with and without optional input.
+- Target shifting and padding masks are inspected token by token.
+- Padding beyond the first end token contributes no loss.
+- Generated responses stop and are decoded as intended.
+- The test set is not used to select hyperparameters.
+
+**Experiment**
+
+Compare the pretrained and instruction-tuned checkpoints on the exact same held-out
+prompts. Use human review as the primary small-scale check. Any automated judge must
+record the judge model, prompt, settings, failure modes, and score uncertainty.
+
+**Exit gate**
+
+Held-out instruction following improves under the fixed rubric, dataset and masking
+tests pass, and limitations are written down explicitly.
+
+### Phase 11 - LoRA
+
+**Book:** Appendix E.
+
+**Learn**
+
+- How a low-rank product approximates a weight update.
+- The meanings of rank and alpha, zero-impact initialization, and frozen base weights.
+- Why fewer trainable parameters do not automatically guarantee lower latency.
+
+**Build**
+
+- A minimal `LoRALayer` with A and B matrices and explicit scaling.
+- A wrapper for selected linear layers that adds the LoRA update to the frozen base
+  output.
+- Target-module selection rather than unexamined global replacement.
+- Save/load of adapter-only weights with base-checkpoint identity.
+
+**Verify**
+
+- With B initialized to zero, adding LoRA does not change model outputs.
+- Only intended adapter parameters require gradients and update.
+- Rank, alpha, parameter count, device, and dtype behavior are tested.
+- Merged or adapter-loaded output matches the live adapter path if merging is added.
+
+**Experiment**
+
+Compare LoRA with full fine-tuning on the same task, base checkpoint, data split,
+effective batch size, evaluation suite, and seed. Report trainable parameters, peak
+memory, wall time, checkpoint size, held-out quality, and failure modes.
+
+**Exit gate**
+
+LoRA's behavior and trainable-parameter reduction are proven by tests, and the fair
+comparison is recorded without claiming improvement from training loss alone.
+
+## 5. Optional SparkLM Extensions
+
+These phases go beyond the book. Begin them only after Phase 11, or explicitly record
+why a book-path phase is being deferred.
+
+### Phase 12 - Domain-Adaptive Pretraining
+
+- Select a lawful, privacy-reviewed domain corpus.
+- Continue next-token pretraining with a conservative learning rate.
+- Compare domain-only batches with a domain/general mixture.
+- Measure held-out domain improvement and general-language forgetting.
+- Do not confuse better domain continuation with instruction-following ability.
+
+**Exit gate:** domain held-out metrics improve without unacceptable degradation on the
+fixed general evaluation set, and all provenance and privacy decisions are documented.
+
+### Phase 13 - Design and Train a 124M-Class SparkLM
+
+- Use the tested architecture to propose a GPT-2-small-like configuration around 124M
+  parameters; derive the exact count rather than naming it approximately.
+- Estimate parameter, gradient, optimizer, activation, and checkpoint memory.
+- Complete forward, backward, optimizer, checkpoint, resume, and generation dry runs
+  at the proposed context length.
+- Measure DGX Spark throughput and memory before choosing batch size or accumulation.
+- Scale data and training tokens only after a small proxy run validates the setup.
+- Add mixed precision or optimized attention one change at a time, comparing each with
+  the simple tested path.
+
+**Exit gate:** the run is stable and resumable, has improving held-out metrics, and has
+a complete manifest and honest compute/data limitations. Training this model is an
+optional compute project, not proof of understanding by itself.
+
+### Phase 14 - Distillation, Quantisation, and Local Inference
+
+- Establish an uncompressed student/reference baseline first.
+- For distillation, define the teacher, data source, hard/soft targets, temperature, and
+  combined objective; compare with a same-size independently trained student.
+- For quantisation, measure full-precision and quantised model size, load time, peak
+  memory, tokens per second, held-out loss, and prompt-suite behavior.
+- Provide a local inference command with explicit checkpoint, tokenizer, seed,
+  temperature, top-k, context limit, and maximum-new-token settings.
+- Keep serving code outside the core model so optimization does not obscure learning
+  implementations.
+
+**Exit gate:** compressed models are compared on identical data and prompts, local
+inference is repeatable, and quality/performance trade-offs are measured rather than
+assumed.
+
+## 6. Testing Strategy
+
+Use four levels of verification:
+
+1. **Unit tests:** tokenization, windows, embeddings, masks, attention, normalization,
+   sampling, loss masking, and checkpoint metadata.
+2. **Numerical tests:** hand calculations and trusted-reference comparisons for
+   attention, gradients, normalization, loss, and sampling probabilities.
+3. **Behavioral tests:** future-token isolation, tiny-batch overfitting, deterministic
+   generation, exact checkpoint reload, and freeze/LoRA update boundaries.
+4. **Experiment tests:** fixed data splits, manifests, fixed prompt suites, comparable
+   settings, and explicit conclusions.
+
+Every bug in a core invariant should produce a regression test before it is considered
+fixed. Tests should remain small enough to run routinely; long GPU experiments are
+recorded separately rather than hidden inside the unit-test suite.
+
+## 7. Experiment Record Contract
+
+Each meaningful run should create a small version-controlled manifest or summary
+containing:
+
+```yaml
+question: "What are we trying to learn?"
+hypothesis: "What result do we expect, and why?"
+code_version: "git commit or explicit dirty-worktree note"
+config: "path plus resolved values"
+dataset: "name, version/hash, split, preprocessing manifest"
+tokenizer: "type, vocabulary/version, special-token policy"
+seed: 42
+device: "CPU/GPU name, relevant software versions"
+precision: "float32, bfloat16, etc."
+model: "architecture and exact parameter count"
+training: "optimizer, LR schedule, batch/accumulation, tokens, steps"
+metrics: "train/validation loss, perplexity, task metrics"
+performance: "elapsed time, tokens/s, peak memory, checkpoint size"
+artifacts: "checkpoint and sample locations, kept outside Git if large"
+result: "observations including failures"
+conclusion: "whether the hypothesis was supported"
+next_decision: "what changes or remains fixed"
 ```
 
-The exact configuration is less important than documenting parameter count, memory use, training tokens, and throughput.
+For comparisons, keep evaluation data, prompt suite, decoding settings, and important
+training variables fixed. Change one important variable at a time unless the experiment
+explicitly studies an interaction.
 
-**Deliverables**
+## 8. Target Repository Shape
 
-- A complete model class with parameter counting.
-- Training and generation commands.
-- Checkpoints and loss curves.
-- A small qualitative sample report.
-
-**Acceptance criteria**
-
-- The model overfits a tiny corpus and learns a held-out corpus better than the baseline.
-- Training can resume from a checkpoint.
-- A run manifest records code version, data version, hyperparameters, seed, device, and metrics.
-
-### Phase 6 — Tokenisation upgrade and SparkLM-125M design
-
-**Suggested time:** 1 week
-
-**Objectives**
-
-- Understand why subword tokenisation is useful before committing compute to the larger model.
-- Design the 125M model from measured memory and throughput rather than from a label alone.
-
-**Implementation tasks**
-
-- Keep the character tokenizer as a reference baseline.
-- Add or integrate a well-documented subword tokenizer only after the character path is stable.
-- Measure average tokens per character/word, vocabulary size, sequence packing efficiency, and unknown handling.
-- Calculate parameter count and estimate activation/checkpoint memory.
-
-**Acceptance criteria**
-
-- Tokenizer choice is justified with measurements.
-- The 125M configuration fits the DGX Spark memory budget with room for the data pipeline and optimiser state.
-- A dry run completes forward, backward, checkpoint, and generation steps at the planned sequence length.
-
-### Phase 7 — Pretraining SparkLM-125M
-
-**Suggested time:** 2–3 weeks or longer
-
-**Objectives**
-
-- Run a disciplined pretraining experiment and learn how compute, data, batch size, learning rate, and context length interact.
-
-**Implementation tasks**
-
-- Finalise corpus filtering, deduplication strategy, and train/validation/test boundaries.
-- Add gradient accumulation, mixed precision where understood, gradient clipping, learning-rate scheduling, and periodic evaluation.
-- Log tokens processed, loss, perplexity, learning rate, throughput, memory, and checkpoint location.
-- Save enough metadata to reproduce or compare each run.
-
-**Experiments**
-
-- Learning-rate range test or several small-scale learning-rate trials.
-- Context-length comparison.
-- Batch-size/gradient-accumulation comparison at similar effective batch size.
-- Ablation of dropout or weight decay.
-- Compare manual attention against optimised attention after correctness is established.
-
-**Acceptance criteria**
-
-- The run is stable and can resume after interruption.
-- Validation loss improves over the baseline and does not merely memorise a tiny sample.
-- Generated text shows increasing structure across checkpoints.
-- At least one failed or unstable run is analysed in the learning log.
-
-### Phase 8 — Evaluation and error analysis
-
-**Suggested time:** 1 week
-
-**Objectives**
-
-- Treat evaluation as a first-class engineering and learning activity.
-
-**Implementation tasks**
-
-- Implement held-out next-token loss and perplexity carefully.
-- Create a fixed prompt suite covering short continuation, long-context continuation, formatting, numbers, names, and domain-like text.
-- Add checks for repetition, truncation, invalid characters/tokens, and sensitivity to temperature.
-- Separate automatic metrics from qualitative review.
-
-**Acceptance criteria**
-
-- Every model comparison uses the same evaluation data and prompt suite.
-- Results include uncertainty or at least repeated-seed context where practical.
-- You can identify several concrete failure modes and connect them to likely causes.
-
-### Phase 9 — Property-management domain adaptation
-
-**Suggested time:** 1–2 weeks
-
-**Objectives**
-
-- Adapt the base model to property-management language while preserving general language ability as much as possible.
-
-**Implementation tasks**
-
-- Assemble lawful, representative domain text: policies, maintenance terminology, notices, procedures, public guidance, and synthetic examples where appropriate.
-- Remove confidential, personal, and tenant-identifying information.
-- Measure domain-token coverage and compare domain versus general validation loss.
-- Start with continued pretraining on domain text, using a conservative learning rate and a held-out general-text check.
-
-**Experiments**
-
-- Domain-only adaptation versus mixed domain/general batches.
-- Short versus longer adaptation duration.
-- Compare catastrophic forgetting on the general validation set.
-
-**Acceptance criteria**
-
-- The adapted model improves on held-out domain text.
-- It does not show unacceptable degradation on the general reference set.
-- Data handling, privacy, and limitations are documented.
-
-### Phase 10 — Instruction tuning and LoRA
-
-**Suggested time:** 1–2 weeks
-
-**Objectives**
-
-- Teach the model to follow requests and compare full fine-tuning with parameter-efficient adaptation.
-
-**Implementation tasks**
-
-- Define a small, high-quality instruction format with explicit prompt, context, response, and end-of-sequence handling.
-- Create training, validation, and challenge sets.
-- Begin with supervised instruction tuning on the full model or a small controlled run.
-- Implement or integrate LoRA only after understanding the base fine-tuning path.
-- Compare trainable parameter count, loss, quality, memory, and training time.
-
-**Acceptance criteria**
-
-- The model distinguishes prompt/context/answer boundaries correctly.
-- Instruction-following improves on held-out tasks, not only training examples.
-- LoRA results are reported against a comparable full fine-tuning baseline.
-- The limitations of small-data instruction tuning are explicit.
-
-### Phase 11 — Distillation
-
-**Suggested time:** 1 week
-
-**Objectives**
-
-- Understand how a stronger teacher can transfer useful behaviour to a smaller student.
-
-**Implementation tasks**
-
-- Choose a teacher and define whether supervision uses hard labels, soft logits, generated responses, or a combination.
-- Build a reproducible distillation dataset or on-the-fly teacher pipeline.
-- Implement temperature-scaled soft-target loss and combine it with ordinary next-token loss.
-- Compare a distilled student with an independently trained student of the same size.
-
-**Acceptance criteria**
-
-- The student is evaluated on identical held-out tests.
-- Quality, latency, memory, and model size are compared.
-- You can explain what information distillation transfers and what it cannot guarantee.
-
-### Phase 12 — Quantisation and local inference
-
-**Suggested time:** 1 week
-
-**Objectives**
-
-- Produce a practical local model and measure the real trade-offs of compression.
-
-**Implementation tasks**
-
-- Establish a full-precision reference model and benchmark first.
-- Try an appropriate post-training quantisation path, then compare with quantisation-aware or weight-only approaches if useful.
-- Measure model size, load time, tokens per second, memory use, perplexity, and prompt-suite quality.
-- Build a simple local inference interface with configurable temperature, top-k/top-p if implemented, maximum tokens, and reproducible seed.
-
-**Acceptance criteria**
-
-- The quantised model runs locally and produces valid output.
-- Differences from the reference model are measured rather than assumed.
-- The inference instructions work from a clean environment using documented commands.
-
-## 5. Suggested repository structure
+Create directories only when their phase begins; do not scaffold all future work at
+once.
 
 ```text
 SparkLM/
-├── README.md
-├── IMPLEMENTATION_PLAN.md
-├── LEARNING_LOG.md
-├── pyproject.toml
-├── configs/
-│   ├── tiny.yaml
-│   ├── sparklm_tiny.yaml
-│   └── sparklm_125m.yaml
-├── data/
-│   ├── README.md
-│   ├── raw/                 # ignored; never commit sensitive data
-│   ├── interim/
-│   └── processed/
-├── notebooks/               # focused explorations, not production training
-├── src/sparklm/
-│   ├── tokenizers/
-│   ├── data.py
-│   ├── attention.py
-│   ├── layers.py
-│   ├── model.py
-│   ├── generation.py
-│   ├── train.py
-│   ├── evaluate.py
-│   ├── adaptation.py
-│   ├── lora.py
-│   ├── distillation.py
-│   └── quantization.py
-├── tests/
-│   ├── test_tokenizer.py
-│   ├── test_data.py
-│   ├── test_attention.py
-│   ├── test_model_shapes.py
-│   ├── test_generation.py
-│   └── test_checkpointing.py
-├── experiments/
-│   ├── README.md
-│   └── runs/                # manifests and summaries; large artifacts elsewhere
-├── checkpoints/             # ignored or externally mounted
-└── scripts/
-    ├── smoke_test.py
-    ├── count_parameters.py
-    ├── train.py
-    └── generate.py
+|-- AGENTS.md
+|-- README.md
+|-- IMPLEMENTATION_PLAN.md
+|-- LEARNING_LOG.md
+|-- pyproject.toml
+|-- essentials/
+|   |-- README.md
+|   |-- ENVIRONMENT.md
+|   |-- SMOKE_TEST.md
+|   |-- DATA_POLICY.md
+|   `-- PROJECT_RULES.md
+|-- configs/
+|-- data/
+|   |-- README.md
+|   |-- raw/                  # ignored
+|   |-- interim/              # ignored
+|   `-- processed/            # ignored unless tiny and licensed
+|-- experiments/
+|   |-- README.md
+|   `-- runs/                 # small manifests and summaries only
+|-- src/sparklm/
+|   |-- tokenizers/
+|   |-- data.py
+|   |-- attention.py
+|   |-- layers.py
+|   |-- model.py
+|   |-- generation.py
+|   |-- training.py
+|   |-- evaluation.py
+|   `-- lora.py
+|-- tests/
+|-- scripts/
+`-- checkpoints/             # ignored or externally mounted
 ```
 
-Keep source code small and legible. Prefer one clear implementation to a general framework. Add abstraction only when a repeated experiment proves that it is needed.
+Keep notebooks for disposable exploration only. Move behavior that matters into small
+source modules with tests and commands.
 
-## 6. What to write manually and what libraries may handle
+## 9. Core Definition of Done
 
-### Write manually during the learning path
+The book-aligned SparkLM learning path is complete when:
 
-- Character tokenizer and encode/decode logic.
-- Sequence creation, target shifting, and batch inspection.
-- Attention score calculation, causal masking, softmax flow, and value aggregation.
-- Multi-head splitting and recombination.
-- Transformer block composition, residual paths, and normalisation placement.
-- Model forward pass and logits interpretation.
-- Generation loop and sampling decisions.
-- Training and validation loops.
-- Checkpoint metadata and experiment summaries.
-- Evaluation prompt suite and error analysis.
+- every Phase 0-11 exit gate is met or a deferral has a written technical reason;
+- the ownership-track model was initialized and pretrained by this project;
+- raw text can be traced through tokenization, batching, embeddings, attention,
+  Transformer blocks, logits, loss, optimization, checkpointing, and generation;
+- causal masking and core tensor operations have direct numerical and gradient tests;
+- a tiny batch overfits, a held-out set improves, and a checkpoint resumes correctly;
+- classification and instruction fine-tuning have held-out evaluations;
+- LoRA has a fair full-fine-tuning comparison;
+- datasets, experiments, failures, and limitations are documented;
+- you can explain the implementation without relying on a framework abstraction or
+  merely repeating the book's code.
 
-### Appropriate library responsibilities
+## 10. Immediate Starting Checklist
 
-- Tensor operations, automatic differentiation, optimisers, schedulers, and standard layers such as `LayerNorm` and `Linear`.
-- CUDA/device management, mixed-precision primitives, data loading, and distributed or accelerated execution after the single-device path is understood.
-- Plotting, logging, experiment tracking, and filesystem-safe checkpoint storage.
-- A mature subword tokenizer after the character tokenizer is understood and retained as a baseline.
-- Reference implementations for numerical comparisons and production-quality serving.
-- LoRA, distillation, and quantisation libraries after you have implemented a minimal conceptual version or written a clear explanation of what the library is doing.
+Start with Phase 0 only:
 
-Do not use `nn.Transformer` or `AutoModelForCausalLM` as the primary implementation in the early phases. Use them later as reference points, compatibility targets, or performance comparisons.
+1. Read Chapter 1's roadmap and Appendix A sections needed for unfamiliar PyTorch
+   concepts.
+2. Re-run and understand the device smoke test; do not accept an old result as proof.
+3. Recreate the environment notes and deterministic seed experiment yourself.
+4. Run the current tests only as a diagnostic baseline.
+5. Record what existing code is present, then replace or validate it phase by phase.
+6. Complete the Phase 0 exit gate before writing tokenizer or model code.
 
-## 7. Definition of done
-
-SparkLM is in a strong first release when:
-
-- The complete model path is understandable from raw text to generated text.
-- Core components have tests and explanatory notes.
-- SparkLM-Tiny and SparkLM-125M have reproducible training manifests.
-- Pretraining, domain adaptation, instruction tuning, LoRA, distillation, and quantisation each have a documented comparison or a clearly stated reason for deferral.
-- Evaluation includes both held-out loss/perplexity and a fixed qualitative prompt suite.
-- The final local inference path is repeatable and its trade-offs are measured.
-- The repository explains what was learned, what failed, and what remains uncertain.
-
-The most important output is not only a model file. It is a durable understanding of why the model works, how to tell when it does not, and which engineering choices changed the result.
+There is intentionally no deadline. Move forward when the evidence says the current
+phase is understood and correct.
