@@ -31,6 +31,7 @@ class BasicTokenizer:
         tokens = self.tokenize(text)
         if not tokens:
             return []
+
         self._build_vocab(tokens)
         return [self.str_to_int[token] for token in tokens]
 
