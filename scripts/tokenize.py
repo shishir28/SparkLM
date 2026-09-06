@@ -18,6 +18,9 @@ def main(argv=None):
     tokenizer = BasicTokenizer(pattern)
     try:
         tokens = tokenizer.tokenize(text)
+        token_ids = tokenizer.encode(text)
+        decoded_text = tokenizer.decode(token_ids)
+        
     except Exception as exc:
         print(f"Tokenization error: {exc}", file=sys.stderr)
         return 3
@@ -28,6 +31,8 @@ def main(argv=None):
     try:
         # sys.stdout.write(out)
         sys.stdout.write(f"\n\nTotal Tokens: {tokenCount}\n")
+        sys.stdout.write(f"Token IDs: {token_ids}\n")
+        sys.stdout.write(f"Decoded Text: {decoded_text}\n")
     except Exception as exc:
         print(f"Error writing output: {exc}", file=sys.stderr)
         return 4

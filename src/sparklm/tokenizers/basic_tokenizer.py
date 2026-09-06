@@ -1,31 +1,46 @@
 import re
-from typing import List, Optional, Pattern
+from typing import Dict, List, Pattern
 
 
 class BasicTokenizer:
-    """A minimal, configurable tokenizer that uses a regex pattern to extract
-    tokens from an input string. The user can provide a regex pattern or set it
-    later via set_pattern().
+    """A minimal tokenizer that splits text into chunks and can encode/decode IDs."""
 
-    This file intentionally keeps the implementation small: you will provide the
-    final regex for the tokenization behavior.
-    """
-
-    def __init__(self, pattern: Optional[str] = None):
-        self._pattern_str: Optional[str] = pattern
-        self._pattern: Optional[Pattern[str]] = re.compile(pattern) if pattern else None
+    def __init__(self, pattern: str):
+        if not pattern:
+            raise ValueError("A regex pattern must be provided to initialize the tokenizer.")
+        self._pattern_str: str = pattern
+        self._pattern: Pattern[str] = re.compile(pattern)
+        self.str_to_int: Dict[str, int] = {}
+        self.int_to_str: Dict[int, str] = {}
 
     def set_pattern(self, pattern: str) -> None:
-        """Set or replace the regex pattern used for tokenization."""
         self._pattern_str = pattern
         self._pattern = re.compile(pattern)
 
     def tokenize(self, text: str) -> List[str]:
         """Split text on the configured regex separator pattern and drop empty parts."""
-        if self._pattern is None:
-            raise ValueError("No regex pattern set for tokenizer. Call set_pattern() or pass a pattern to __init__.")
         return [part for part in self._pattern.split(text) if part != ""]
 
+    def _build_vocab(self, tokens: List[str]) -> None:
+        vocab = sorted(set(tokens))
+        self.str_to_int = {token: index for index, token in enumerate(vocab)}
+        self.int_to_str = {index: token for token, index in self.str_to_int.items()}
+
+    def encode(self, text: str) -> List[int]:
+        """Tokenize text and convert each token to an integer ID."""
+        tokens = self.tokenize(text)
+        if not tokens:
+            return []
+        self._build_vocab(tokens)
+        return [self.str_to_int[token] for token in tokens]
+
+    def decode(self, ids: List[int]) -> str:
+        """Convert token IDs back to text using the same vocabulary."""
+        if not ids:
+            return ""
+        tokens = [self.int_to_str[index] for index in ids]
+        return " ".join(tokens)
+
     @property
-    def pattern(self) -> Optional[str]:
+    def pattern(self) -> str:
         return self._pattern_str

@@ -2,7 +2,6 @@ from sparklm.tokenizers.basic_tokenizer import BasicTokenizer
 
 
 def test_tokenize_simple_words():
-    # Split on whitespace; punctuation stays attached to the neighboring word.
     pattern = r"\s+"
     tk = BasicTokenizer(pattern)
     text = "Hello, world!"
@@ -10,12 +9,16 @@ def test_tokenize_simple_words():
     assert tokens == ["Hello,", "world!"], f"unexpected tokens: {tokens}"
 
 
+def test_encode_decode_round_trip():
+    tk = BasicTokenizer(r"\s+")
+    text = "apple banana apple"
+    ids = tk.encode(text)
+    decoded = tk.decode(ids)
+    assert ids == [0, 1, 0]
+    assert decoded == "apple banana apple"
+
+
 def test_set_pattern_later():
-    tk = BasicTokenizer()
-    try:
-        tk.tokenize("no pattern")
-        assert False, "tokenize should have raised when pattern is not set"
-    except ValueError:
-        pass
+    tk = BasicTokenizer(r"\s+")
     tk.set_pattern(r"\s+")
     assert tk.tokenize("abc 123") == ["abc", "123"]
