@@ -16,7 +16,7 @@ def create_dataloader_v1(
     stride: int = 128, # how far the window moves, smaller stride means more overlapping windows, bigger stride means less overlapping windows
     shuffle: bool = True, # changes the order of windows 
     drop_last: bool = True, # Final short batch is discarded if True, otherwise it is returned as a smaller batch
-    num_workers: int = 0,
+    num_workers: int = 0, # The number of CPU processes to use for preprocessing
 ) -> DataLoader:
     """Create a DataLoader for the book's sliding-window next-token dataset."""
     if batch_size <= 0:
