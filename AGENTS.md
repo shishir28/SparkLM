@@ -64,6 +64,21 @@ Model comparisons should use the same evaluation data, prompt suite, and clearly
 - Keep user changes intact and avoid destructive repository commands.
 - After editing, report changed files and the verification performed.
 
+Special "herdr" runtime policy
+
+If a coding agent is started from the "herdr" environment, the agent must follow a stricter minimal-noise policy:
+
+- Generated code should contain comments only when they add information that cannot be expressed through clear identifiers or small helper functions (no large blocks of restating comments).
+- Responses must be concise; provide detailed explanations only when explicitly requested by the user.
+
+Detection and helper
+
+This repository includes a lightweight runtime helper at `.agents/herdr_guard.py` and a policy document `.agents/herdr_policy.md`.
+
+Agents started on herdr should import and call `assert_herdr_policy(code=..., response=...)` before emitting code or long textual replies. The helper detects the herdr environment (HERDR env var or hostname containing `herdr`) and applies conservative heuristics (comment density and response length). If a check fails the helper raises `HerdrPolicyViolation` so the agent can regenerate a leaner output or present the failure for human review.
+
+The helper is a guidance and enforcement aid; it is still the agent runtime's responsibility to call it prior to returning generated outputs.
+
 ## Useful repository references
 
 - [README.md](README.md) — project orientation and starting point.
