@@ -1,5 +1,6 @@
 import pytest
 import torch
+from torch import nn
 
 from sparklm.model import GPTModel
 
@@ -16,6 +17,14 @@ def tiny_config(**overrides):
     }
     config.update(overrides)
     return config
+
+
+def test_gpt_model_uses_a_positional_embedding_table():
+    model = GPTModel(tiny_config(context_length=8, embedding_dim=12))
+
+    assert isinstance(model.pos_embedding, nn.Embedding)
+    assert model.pos_embedding.num_embeddings == 8
+    assert model.pos_embedding.embedding_dim == 12
 
 
 def test_gpt_model_returns_logits_for_each_token():
