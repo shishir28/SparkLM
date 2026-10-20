@@ -28,7 +28,9 @@ def main() -> int:
         drop_last=False,
         num_workers=0,
     )
-    batch_x, _ = next(iter(loader))
+    batch_x, batch_y = next(iter(loader))
+    assert batch_x.shape == batch_y.shape == (1, 4)
+    assert torch.equal(batch_y[:, :-1], batch_x[:, 1:])
 
     token_embedding = TokenEmbedding(vocab_size=50257, embedding_dim=256)
     token_embeddings = token_embedding(batch_x)

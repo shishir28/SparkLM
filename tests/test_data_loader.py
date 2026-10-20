@@ -1,3 +1,5 @@
+import torch
+
 from sparklm.data_loader import create_dataloader_v1
 
 
@@ -14,10 +16,8 @@ def test_create_dataloader_v1_builds_valid_loader():
     )
 
     batch_x, batch_y = next(iter(loader))
-    assert batch_x.shape[0] == 2
-    assert batch_y.shape[0] == 2
-    assert batch_x.shape[1] == 3
-    assert batch_y.shape[1] == 3
+    assert batch_x.shape == batch_y.shape == (2, 3)
+    assert torch.equal(batch_y[:, :-1], batch_x[:, 1:])
 
 
 def test_create_dataloader_v1_validates_inputs():

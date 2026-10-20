@@ -24,7 +24,7 @@ class GPTDatasetV1(Dataset):
         self.token_ids = tokenizer.encode(text)
 
         # Slide a window across the token stream; target is the same window shifted by one token.
-        for i in range(0, len(self.token_ids) - max_length + 1, stride):
+        for i in range(0, len(self.token_ids) - max_length, stride):
             input_chunk = self.token_ids[i : i + max_length]
             target_chunk = self.token_ids[i + 1 : i + max_length + 1]
             self.input_ids.append(torch.tensor(input_chunk, dtype=torch.long))
