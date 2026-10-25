@@ -1,6 +1,15 @@
 import urllib.error
 from pathlib import Path
 
+import torch
+
+from sparklm.classification.classifier_model import (
+    BASE_CONFIG,
+    add_classification_head,
+    initialize_pretrained_gpt2,
+    run_pretrained_sanity_checks,
+)
+from sparklm.classification.metrics import calc_accuracy_loader
 from sparklm.classification.spam_data import (
     create_balanced_dataset,
     download_and_unzip_spam_data,
@@ -12,11 +21,7 @@ from sparklm.classification.spam_dataset import (
     create_spam_data_loaders,
     create_spam_datasets,
 )
-from sparklm.config import GPT2_MODEL_CONFIGS
-from sparklm.generation import generate_text_simple
-from sparklm.gpt2_weights import load_weights_into_gpt
-from sparklm.model import GPTModel
-from sparklm.text_utils import text_to_token_ids, token_ids_to_text
+from sparklm.device import move_model_to_device
 from sparklm.tokenizers.bpe_tokenizer import BPETokenizer
 
 
@@ -34,19 +39,6 @@ FALLBACK_URL = (
     "https://f001.backblazeb2.com/file/"
     "LLMs-from-scratch/sms%2Bspam%2Bcollection.zip"
 )
-CHOOSE_MODEL = "gpt2-small (124M)"
-CLASSIFICATION_PROMPT = (
-    "Is the following text 'spam'? Answer with 'yes' or 'no':"
-    " 'You are a winner you have been specially"
-    " selected to receive $1000 cash or a $2000 award.'"
-)
-BASE_CONFIG = {
-    "vocab_size": 50257,
-    "context_length": 1024,
-    "drop_rate": 0.0,
-    "qkv_bias": True,
-    **GPT2_MODEL_CONFIGS[CHOOSE_MODEL],
-}
 EXPECTED_RAW_COUNTS = {"ham": 4825, "spam": 747}
 EXPECTED_SPLIT_SIZES = (1045, 149, 300)
 EXPECTED_LOADER_COUNTS = (130, 19, 38)
@@ -102,32 +94,6 @@ def prepare_spam_csv_files():
     return csv_paths
 
 
-def initialize_pretrained_gpt2(tokenizer):
-    from sparklm.gpt_download import download_and_load_gpt2
-
-    model_size = CHOOSE_MODEL.split(" ")[-1].lstrip("(").rstrip(")")
-    _, params = download_and_load_gpt2(model_size, GPT2_MODELS_DIR)
-
-    model = GPTModel(BASE_CONFIG)
-    load_weights_into_gpt(model, params)
-    model.eval()
-
-    prompts = (
-        ("Every effort moves you", 15),
-        (CLASSIFICATION_PROMPT, 23),
-    )
-    for prompt, max_new_tokens in prompts:
-        token_ids = generate_text_simple(
-            model,
-            idx=text_to_token_ids(prompt, tokenizer),
-            max_new_tokens=max_new_tokens,
-            context_size=BASE_CONFIG["context_length"],
-        )
-        generated_text = token_ids_to_text(token_ids, tokenizer)
-        print(f"Generated text for '{prompt}': {generated_text}")
-    return model
-
-
 def main() -> int:
     csv_paths = prepare_spam_csv_files()
     tokenizer = BPETokenizer("gpt2")
@@ -146,13 +112,32 @@ def main() -> int:
     if loader_counts != EXPECTED_LOADER_COUNTS:
         raise ValueError(f"Unexpected loader counts: {loader_counts}")
 
-    initialize_pretrained_gpt2(tokenizer)
+    model = initialize_pretrained_gpt2(GPT2_MODELS_DIR)
+    run_pretrained_sanity_checks(model, tokenizer)
+    model = add_classification_head(model, num_classes=2, trainable_last_blocks=1)
+    device = move_model_to_device(model)
+    print(f"Using device: {device}")
 
-    print(f"Raw data: {DATA_FILE_PATH}")
-    print(f"Processed data: {PROCESSED_DIR}")
-    print(f"Dataset sizes: {tuple(len(dataset) for dataset in datasets)}")
-    print(f"Maximum sequence length: {datasets[0].max_length}")
-    print(f"Loader counts: {loader_counts}")
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=5e-5,
+        weight_decay=0.1,
+    )
+
+    # The test loader stays unused until the final evaluation after training.
+    train_loader, validation_loader, test_loader = loaders
+
+    train_accuracy = calc_accuracy_loader(
+        train_loader, model, device, num_batches=10
+    )
+    validation_accuracy = calc_accuracy_loader(
+        validation_loader, model, device, num_batches=10
+    )
+    print(
+        "Baseline accuracy (10 batches): "
+        f"Train: {train_accuracy:.4f}, Validation: {validation_accuracy:.4f}"
+    )
+
     return 0
 
 

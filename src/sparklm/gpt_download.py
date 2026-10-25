@@ -6,6 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 def download_and_load_gpt2(model_size, models_dir):
+    tf.config.set_visible_devices([], "GPU")
     allowed_sizes = ["124M", "355M", "774M", "1558M"]
     if model_size not in allowed_sizes:
         raise ValueError(f"Invalid model size '{model_size}'. Allowed sizes: {allowed_sizes}")
@@ -28,6 +29,7 @@ def download_and_load_gpt2(model_size, models_dir):
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             continue
         download_file(url, local_path)
+
 
     tf_checkpoint_path = tf.train.latest_checkpoint(model_dir)
     if tf_checkpoint_path is None:
