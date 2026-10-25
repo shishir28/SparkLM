@@ -21,3 +21,31 @@ def plot_losses(epochs_seen, tokens_seen, train_losses, val_losses, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path)
     plt.close()
+
+
+def plot_values(epochs_seen, examples_seen, train_values, val_values, label, path):
+    fig, ax1 = plt.subplots(figsize=(5, 3))
+    ax1.plot(
+        epochs_seen,
+        train_values,
+        label=f"Train {label.capitalize()}",
+        color="blue",
+    )
+    ax1.plot(
+        epochs_seen,
+        val_values,
+        label=f"Validation {label.capitalize()}",
+        color="red",
+    )
+    ax1.set_xlabel("Epochs")
+    ax1.set_ylabel(label.capitalize())
+    ax1.legend()
+
+    ax2 = ax1.twiny()
+    ax2.plot(examples_seen, train_values, alpha=0.0)
+    ax2.set_xlabel("Examples Seen")
+
+    fig.tight_layout()
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path)
+    plt.close()

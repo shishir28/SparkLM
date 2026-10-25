@@ -1,6 +1,9 @@
 import os
 import json
 import requests
+# Triton (loaded lazily by torch._dynamo, e.g. in AdamW) segfaults if TensorFlow
+# is imported first, so load torch._dynamo before TensorFlow.
+import torch._dynamo  # noqa: F401
 import tensorflow as tf
 import numpy as np
 from tqdm import tqdm
