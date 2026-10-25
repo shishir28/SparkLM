@@ -12,6 +12,11 @@ from sparklm.classification.spam_dataset import (
     create_spam_data_loaders,
     create_spam_datasets,
 )
+from sparklm.config import GPT2_MODEL_CONFIGS
+from sparklm.generation import generate_text_simple
+from sparklm.gpt2_weights import load_weights_into_gpt
+from sparklm.model import GPTModel
+from sparklm.text_utils import text_to_token_ids, token_ids_to_text
 from sparklm.tokenizers.bpe_tokenizer import BPETokenizer
 
 
@@ -23,15 +28,28 @@ PROCESSED_DIR = ROOT / "data" / "processed" / "sms_spam"
 TRAIN_CSV = PROCESSED_DIR / "train.csv"
 VALIDATION_CSV = PROCESSED_DIR / "validation.csv"
 TEST_CSV = PROCESSED_DIR / "test.csv"
+GPT2_MODELS_DIR = ROOT / "gpt2"
 PRIMARY_URL = "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip"
 FALLBACK_URL = (
     "https://f001.backblazeb2.com/file/"
     "LLMs-from-scratch/sms%2Bspam%2Bcollection.zip"
 )
+CHOOSE_MODEL = "gpt2-small (124M)"
+CLASSIFICATION_PROMPT = (
+    "Is the following text 'spam'? Answer with 'yes' or 'no':"
+    " 'You are a winner you have been specially"
+    " selected to receive $1000 cash or a $2000 award.'"
+)
+BASE_CONFIG = {
+    "vocab_size": 50257,
+    "context_length": 1024,
+    "drop_rate": 0.0,
+    "qkv_bias": True,
+    **GPT2_MODEL_CONFIGS[CHOOSE_MODEL],
+}
 EXPECTED_RAW_COUNTS = {"ham": 4825, "spam": 747}
 EXPECTED_SPLIT_SIZES = (1045, 149, 300)
 EXPECTED_LOADER_COUNTS = (130, 19, 38)
-GPT2_CONTEXT_LENGTH = 1024
 
 
 def download_spam_data():
@@ -84,13 +102,39 @@ def prepare_spam_csv_files():
     return csv_paths
 
 
+def initialize_pretrained_gpt2(tokenizer):
+    from sparklm.gpt_download import download_and_load_gpt2
+
+    model_size = CHOOSE_MODEL.split(" ")[-1].lstrip("(").rstrip(")")
+    _, params = download_and_load_gpt2(model_size, GPT2_MODELS_DIR)
+
+    model = GPTModel(BASE_CONFIG)
+    load_weights_into_gpt(model, params)
+    model.eval()
+
+    prompts = (
+        ("Every effort moves you", 15),
+        (CLASSIFICATION_PROMPT, 23),
+    )
+    for prompt, max_new_tokens in prompts:
+        token_ids = generate_text_simple(
+            model,
+            idx=text_to_token_ids(prompt, tokenizer),
+            max_new_tokens=max_new_tokens,
+            context_size=BASE_CONFIG["context_length"],
+        )
+        generated_text = token_ids_to_text(token_ids, tokenizer)
+        print(f"Generated text for '{prompt}': {generated_text}")
+    return model
+
+
 def main() -> int:
     csv_paths = prepare_spam_csv_files()
     tokenizer = BPETokenizer("gpt2")
     datasets = create_spam_datasets(
         *csv_paths,
         tokenizer=tokenizer,
-        context_length=GPT2_CONTEXT_LENGTH,
+        context_length=BASE_CONFIG["context_length"],
     )
     if datasets[0].max_length != 120:
         raise ValueError(
@@ -101,6 +145,8 @@ def main() -> int:
     loader_counts = tuple(len(loader) for loader in loaders)
     if loader_counts != EXPECTED_LOADER_COUNTS:
         raise ValueError(f"Unexpected loader counts: {loader_counts}")
+
+    initialize_pretrained_gpt2(tokenizer)
 
     print(f"Raw data: {DATA_FILE_PATH}")
     print(f"Processed data: {PROCESSED_DIR}")
