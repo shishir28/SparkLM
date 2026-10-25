@@ -10,6 +10,7 @@ from sparklm.classification.classifier_model import (
     initialize_pretrained_gpt2,
     run_pretrained_sanity_checks,
 )
+from sparklm.classification.inference import classify_review
 from sparklm.classification.metrics import calc_accuracy_loader, calc_loss_loader
 from sparklm.classification.spam_data import (
     create_balanced_dataset,
@@ -49,6 +50,13 @@ NUM_EPOCHS = 5
 RUNS_DIR = ROOT / "experiments" / "runs"
 LOSS_PLOT_PATH = RUNS_DIR / "spam_classifier_loss.png"
 ACCURACY_PLOT_PATH = RUNS_DIR / "spam_classifier_accuracy.png"
+MODEL_PATH = RUNS_DIR / "spam_classifier_model.pt"
+EXAMPLE_TEXTS = (
+    "You are a winner you have been specially"
+    " selected to receive $1000 cash or a $2000 award.",
+    "Hey, just wanted to check if we're still on"
+    " for dinner tonight? Let me know!",
+)
 
 
 def download_spam_data():
@@ -207,6 +215,21 @@ def print_final_accuracy(model, loaders, device):
     )
 
 
+def print_example_predictions(model, tokenizer, device, max_length):
+    for text in EXAMPLE_TEXTS:
+        prediction = classify_review(
+            text, model, tokenizer, device, max_length=max_length
+        )
+        print(f"Text: {text}\nClassified as: {prediction}")
+
+
+def save_classifier(model):
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), MODEL_PATH)
+    print(f"Saved classifier to {MODEL_PATH}")
+    return MODEL_PATH
+
+
 def main() -> int:
     tokenizer = BPETokenizer("gpt2")
     loaders = create_spam_loaders(tokenizer)
@@ -219,6 +242,10 @@ def main() -> int:
     history = fine_tune(model, train_loader, validation_loader, device)
     save_training_plots(history)
     print_final_accuracy(model, loaders, device)
+
+    max_length = train_loader.dataset.max_length
+    print_example_predictions(model, tokenizer, device, max_length)
+    save_classifier(model)
     return 0
 
 
